@@ -1,0 +1,92 @@
+name: Build for cPanel
+
+on:
+  # Bấm nút "Run workflow" thủ công trên GitHub
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: "NEXT_PUBLIC_API_URL (để trống = dùng Secret)"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout code ──────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Setup Node 20 ──────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      # ── 3. Tạo .env.local từ Secrets ─────────────────────────
+      - name: Create .env.local
+        working-directory: frontend
+        run: |
+          API_URL="${{ github.event.inputs.api_url }}"
+          if [ -z "$API_URL" ]; then
+            API_URL="${{ secrets.NEXT_PUBLIC_API_URL }}"
+          fi
+
+          cat > .env.local << EOF
+          NEXT_PUBLIC_API_URL=${API_URL}
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY=${{ secrets.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+          EOF
+
+          echo "✅ .env.local created"
+          cat .env.local
+
+      # ── 4. npm install ────────────────────────────────────────
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # ── 5. Build Next.js ──────────────────────────────────────
+      - name: Build Next.js
+        working-directory: frontend
+        run: npm run build
+
+      # ── 6. Copy static/public vào standalone ──────────────────
+      - name: Copy static assets into standalone
+        working-directory: frontend
+        run: |
+          cp -r .next/static   .next/standalone/.next/static
+          cp -r public         .next/standalone/public
+          cp .env.local        .next/standalone/.env.local
+          cp cpanel-start.js   .next/standalone/cpanel-start.js
+
+          # package.json tối giản cho standalone
+          cat > .next/standalone/package.json << 'EOF'
+          {
+            "name": "exeguard-frontend",
+            "version": "2.0.0",
+            "private": true,
+            "scripts": { "start": "node server.js" }
+          }
+          EOF
+
+      # ── 7. Đóng gói zip ───────────────────────────────────────
+      - name: Package zip
+        working-directory: frontend
+        run: |
+          cd .next/standalone
+          zip -r ../../exeguard-cpanel.zip . \
+            --exclude "*.DS_Store" \
+            --exclude "__MACOSX/*"
+          echo "✅ exeguard-cpanel.zip created"
+          ls -lh ../../exeguard-cpanel.zip
+
+      # ── 8. Upload artifact (tải về từ Actions tab) ─────────────
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: exeguard-cpanel
+          path: frontend/exeguard-cpanel.zip
+          retention-days: 7
